@@ -16,7 +16,13 @@ DSH（DeepSeek Harness）生态插件：常驻 dsh 界面前层的 AI 数字人�
 ### 从 GitHub 直接安装（推荐）
 
 ```bash
-dsh plugin add github:sunqing975/dsh-avatar
+dsh plugin --profile <你的profile名> add github:sunqing975/dsh-avatar
+```
+
+例如使用默认的 web profile：
+
+```bash
+dsh plugin --profile web add github:sunqing975/dsh-avatar
 ```
 
 首次安装时 dsh 的供应链安全策略会拦截 git 源包的构建脚本（`prepare`），报错会给出类似这样的提示：
