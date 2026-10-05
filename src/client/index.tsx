@@ -2,8 +2,7 @@ import type { ComponentType } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
-import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
-import { AvatarBody, AvatarTitle } from './AvatarPanel.tsx'
+import { AvatarFloating } from './AvatarFloating.tsx'
 import { emitExpression, emitMotion } from './event-bus.ts'
 
 /**
@@ -31,22 +30,18 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export const name = 'dsh-avatar-client'
-export const inject = ['slots', 'sidebarRightTabs', 'sidebarRight']
-
-const TAB_ID = 'dsh-avatar'
-const TAB_KIND = 'dsh-avatar'
+export const inject = ['slots']
 
 export function apply(ctx: Context): void {
   try {
-    // 阶段一：注册右栏 tab 类型（页面型，按 kind 打开）。
-    ctx.effect(() => {
+    // 注册数字人常驻浮层到 dsh 全局前层（shell.overlay）：
+    // 所有页面/会话常驻可见，不占用任何 tab。
+    ctx.effect(() => ctx.slots.inject('shell.overlay', () => {
       try {
-        return ctx.sidebarRightTabs.register({
-          id: TAB_ID,
-          kind: TAB_KIND,
-          priority: 'extension',
-          title: () => '数字人',
-        })
+        return ctx.slots.register({
+          name: 'shell.overlay',
+          id: 'dsh-avatar',
+        }, AvatarFloating)
       } catch (err) {
         // HMR 热重载时旧注册可能未及时释放，已注册则跳过。
         if (err instanceof Error && err.message.includes('already registered')) {
@@ -54,41 +49,7 @@ export function apply(ctx: Context): void {
         }
         throw err
       }
-    })
-
-    // 阶段二：tab body（数字人面板）注册到 keyed seat。
-    ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () =>
-      ctx.slots.register({
-        name: 'sidebar.right.pane.tab',
-        key: TAB_KIND,
-      }, AvatarBody),
-    ))
-
-    // 阶段三：tab chip 标题。
-    ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () =>
-      ctx.slots.register(
-        { name: 'sidebar.right.pane.tab.title', key: TAB_KIND },
-        AvatarTitle,
-      ),
-    ))
-
-    // 阶段四：打开数字人 tab（右栏 tab 栏只显示已打开/导航过的 tab）。
-    // openTab 需要右栏 seat 挂载（会话激活后），轮询重试直到成功。
-    ctx.effect(() => {
-      const interval = setInterval(() => {
-        try {
-          ctx.sidebarRight.openTab(TAB_KIND, { revealIfOpened: true })
-          clearInterval(interval)
-        } catch (err) {
-          // 'no session surface is mounted'：会话未激活，继续等。
-          // 'already registered'：HMR 残留，放弃。
-          if (err instanceof Error && err.message.includes('already registered')) {
-            clearInterval(interval)
-          }
-        }
-      }, 800)
-      return () => clearInterval(interval)
-    })
+    }))
 
     // 事件链路：监听 session 日志里的 tool/result，命中表情/动作工具则驱动数字人。
     ctx.on('session/event', (_session, event: SessionEvent) => {

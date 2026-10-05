@@ -1,7 +1,7 @@
 {
   "name": "dsh-avatar",
   "version": "0.1.0",
-  "description": "DSH 插件：住在侧边栏的 AI 数字人（VRM 形象，大模型通过工具驱动表情与动作，纯表现层）",
+  "description": "DSH 插件：常驻 dsh 界面前层的 AI 数字人（VRM 形象，大模型通过工具驱动表情与动作，纯表现层）",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -31,8 +31,7 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-ui-sidebar-right"
+        "@deepseek-ai/dsh-client-ui-slots"
       ],
       "platform": "web"
     }
