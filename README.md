@@ -11,6 +11,37 @@ DSH（DeepSeek Harness）生态插件：常驻 dsh 界面前层的 AI 数字人�
 - **动作**：大模型调用 `play_motion`（enum 来自 `assets/animations/` 目录动态扫描），播放 VRMA 动作，idle 循环待机。
 - **手动导入动作**：往 `assets/animations/` 放入 `.vrma` 文件（重启插件后自动进入工具清单），即插即用。
 
+## 安装
+
+### 从 GitHub 直接安装（推荐）
+
+```bash
+dsh plugin add github:sunqing975/dsh-avatar
+```
+
+首次安装时 dsh 的供应链安全策略会拦截 git 源包的构建脚本（`prepare`），报错会给出类似这样的提示：
+
+```
+[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] ... add the exact key pnpm printed above under allowBuilds in /Users/<你>/.dsh/profiles/<profile>/pnpm-workspace.yaml
+```
+
+按提示把报错中的完整条目加入 `~/.dsh/profiles/<profile>/pnpm-workspace.yaml`（参考格式）：
+
+```yaml
+allowBuilds:
+  dsh-avatar@https://codeload.github.com/sunqing975/dsh-avatar/tar.gz/<commit>: true
+```
+
+保存后重新执行 `dsh plugin add github:sunqing975/dsh-avatar` 即可完成安装，然后重启 dsh web。
+
+> 说明：`allowBuilds` 是 dsh 的正式安全机制（仅放行已确认来源的构建脚本），不是绕过限制。
+
+### 本地开发（link 安装）
+
+```bash
+dsh plugin --profile web add link:/path/to/dsh-avatar
+```
+
 ## 模型与动作
 
 - 默认模型：`assets/models/nuomi.vrm`（女仆装 VRM，用户自有资产）
