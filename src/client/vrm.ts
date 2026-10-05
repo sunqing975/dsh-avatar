@@ -76,6 +76,15 @@ export class AvatarController {
     })
     this.mixer = new THREE.AnimationMixer(vrm.scene)
     this.scene.add(vrm.scene)
+    // 按模型包围盒自动取景：保证人物完整入画（头顶/脚不裁切）。
+    const box = new THREE.Box3().setFromObject(vrm.scene)
+    const center = box.getCenter(new THREE.Vector3())
+    const size = box.getSize(new THREE.Vector3())
+    const fovRad = (this.camera.fov * Math.PI) / 180
+    // 以人物高度为主导，留 15% 余量。
+    const dist = (size.y / 2 / Math.tan(fovRad / 2)) * 1.15
+    this.camera.position.set(center.x, center.y, center.z + dist)
+    this.camera.lookAt(center.x, center.y + size.y * 0.08, center.z)
   }
 
   /**
