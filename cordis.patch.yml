@@ -1,0 +1,5 @@
+# 组合补丁：`dsh plugin add dsh-avatar` 时把插件行插入 profile 组合。
+# 作用域包名必须加引号（YAML 中 @ 不能作为裸标量起始字符）。
+- insert:
+    - id: dsh-avatar
+      name: 'dsh-avatar'
