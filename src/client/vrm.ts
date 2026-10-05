@@ -71,6 +71,8 @@ export class AvatarController {
     const vrm = gltf.userData.vrm as VRM
     VRMUtils.removeUnnecessaryJoints(vrm.scene)
     this.vrm = vrm
+    // 模型正面朝向修正：标准 VRM 正面向 +Z；若模型正面朝 -Z（背对相机），旋转 180°。
+    vrm.scene.rotation.y = Math.PI
     vrm.scene.traverse((obj) => {
       obj.frustumCulled = false
     })
