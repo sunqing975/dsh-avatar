@@ -5,14 +5,23 @@ import { AvatarController } from './vrm.ts'
 const MODEL_URL = '/dsh-avatar/model.vrm'
 const ASSETS_URL = '/dsh-avatar/assets'
 
+/** 浮层尺寸（人物显示区，透明背景）。 */
+const WIDTH = 220
+const HEIGHT = 300
+/** 默认贴边间距。 */
+const MARGIN = 12
+
 /**
- * 数字人常驻浮层：挂在 dsh 全局前层（shell.overlay），
- * 所有页面/会话常驻可见，不依赖任何 tab 或会话。
+ * 数字人常驻浮层：挂在 dsh 全局前层（shell.overlay）。
+ * 只显示人物本体（透明背景），可拖拽，位置跟随用户。
  */
 export function AvatarFloating(): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const controllerRef = useRef<AvatarController | null>(null)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  // 拖拽位置（left/top 像素）；null 表示尚未拖过，用默认右下角。
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  const dragRef = useRef<{ startX: number; startY: number; origLeft: number; origTop: number } | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -56,30 +65,50 @@ export function AvatarFloating(): React.JSX.Element {
     }
   }, [])
 
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const current = pos ?? { left: window.innerWidth - WIDTH - MARGIN, top: window.innerHeight - HEIGHT - MARGIN }
+    dragRef.current = { startX: e.clientX, startY: e.clientY, origLeft: current.left, origTop: current.top }
+    ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+    e.preventDefault()
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const drag = dragRef.current
+    if (!drag) return
+    const left = Math.min(Math.max(drag.origLeft + e.clientX - drag.startX, -WIDTH + 60), window.innerWidth - 60)
+    const top = Math.min(Math.max(drag.origTop + e.clientY - drag.startY, 0), window.innerHeight - 60)
+    setPos({ left, top })
+  }
+
+  const onPointerUp = (): void => {
+    dragRef.current = null
+  }
+
+  const current = pos ?? { left: window.innerWidth - WIDTH - MARGIN, top: window.innerHeight - HEIGHT - MARGIN }
+
   return (
     <div
       data-dsh-avatar
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
       style={{
         position: 'fixed',
-        right: 16,
-        bottom: 16,
-        width: 220,
-        height: 300,
-        borderRadius: 12,
-        overflow: 'hidden',
+        left: current.left,
+        top: current.top,
+        width: WIDTH,
+        height: HEIGHT,
         pointerEvents: 'auto',
-        boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        background: 'linear-gradient(180deg, #1b2a4a 0%, #0e1626 100%)',
+        cursor: 'grab',
+        touchAction: 'none',
         zIndex: 2147483000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        background: 'transparent',
       }}
     >
       <canvas
         ref={canvasRef}
-        style={{ display: 'block', width: '100%', height: '100%' }}
+        style={{ display: 'block', width: '100%', height: '100%', userSelect: 'none' }}
       />
       {state !== 'ready' && (
         <div
