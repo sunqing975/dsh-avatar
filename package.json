@@ -38,6 +38,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json"
   },
   "dependencies": {
