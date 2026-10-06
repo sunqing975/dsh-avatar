@@ -1,5 +1,7 @@
 # dsh-avatar
 
+[![CI](https://github.com/sunqing975/dsh-avatar/actions/workflows/ci.yml/badge.svg)](https://github.com/sunqing975/dsh-avatar/actions/workflows/ci.yml)
+
 DSH（DeepSeek Harness）生态插件：常驻 dsh 界面前层的 AI 数字人。
 
 纯表现层——VRM 形象渲染 + 大模型通过工具驱动表情与动作，不涉及人格、记忆、字幕等业务逻辑。与 nuomi 项目思想对齐，但代码独立全新（nuomi 冻结不动）。
@@ -8,7 +10,14 @@ DSH（DeepSeek Harness）生态插件：常驻 dsh 界面前层的 AI 数字人�
 
 - **前层常驻**：数字人悬浮在 dsh 界面右下角（`shell.overlay` 全局前层），所有页面/会话常驻可见，不占用任何 tab。
 - **表情**：大模型调用 `set_expression`（enum 来自当前 VRM 模型的 blend shapes），数字人 5 秒后自动复位。
+  待机素材自带的五官通道（`idle_stand` 有 `blink` / `blinkLeft` / `oh` / `sad` + lookAt 轨道）负责
+  眨眼与视线，**工具表情优先**：mixer 写完权重后会再把工具表情压回 1，不会被素材的
+  `blink`/`sad`/`oh` 静默覆盖（通道名重叠：sorrow↔sad、o↔oh、blink_l↔blinkLeft）。
 - **动作**：大模型调用 `play_motion`（enum 来自动作清单动态扫描），播放 VRMA 动作，idle 循环待机。
+- **待机先加载、不等人**：内置动作合计约 3.6MB（`Body Block.vrma` 一个就 2.6MB 且排在清单第一个），
+  早年是串行全下完才播待机 —— 打开页面/切换资产时要先举着手站好几秒。现在**待机素材单独阻塞加载
+  并立刻播**，其余动作并行扔后台（网络并行、绑定骨骼串行，避免并发动 vrm），期间到达的
+  `play_motion` 指令先挂起、加载完补播。日志：`controller:idle:…:ms=` 与 `controller:motions:loaded=n/N:ms=`。
 - **待机用真实动作，且不会「飘」**：待机优先使用内置的 `idle_stand.vrma`
   （真实录制的站立待机，51 骨骼 / 12.1s / 循环接缝 0.68°，来源见
   [assets/animations/ATTRIBUTION.md](assets/animations/ATTRIBUTION.md)），按

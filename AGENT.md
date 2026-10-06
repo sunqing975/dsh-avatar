@@ -65,6 +65,21 @@ DSH 生态插件（`dsh plugin add` 安装）：常驻 dsh 界面前层的 AI �
    有缓存，量之前要置 null 才会按当前姿势重算），`src/client/drag.ts` 的 `clampToViewport()`
    据此允许空画布溢出、但保证人物本体不出视口；`resize` 后重新夹取。verify 有对应断言
    （人可贴四边 + 人物本体永不越界，padding=0 时退化为整框留内）。
+10. **待机素材要单独先加载**：内置动作合计约 3.6MB，其中 `Body Block.vrma` 2.6MB（还是
+   FBX2glTF 产的 JSON glTF，buffer 是 base64 data-URI，比二进制更胖）且排在清单第一个；
+   早年 `loadAnimations` 串行全下完才播待机 —— 每次打开页面/切资产，人物先在 bind pose
+   举着手站几秒。现在：待机素材（`pickIdleMotion` 选出的）阻塞加载并立刻播，其余动作走
+   `planMotionLoad()` 拆出来并行后台拉；网络并行、`createVRMAnimationClip` 排串行队列
+   （它会往 `vrm.scene` 里加 `VRMLookAtQuaternionProxy`，并发绑定会打架）。
+   后台加载期间到达的 play_motion 靠 `pendingMotion` 补播，判据从「clips 为空」改成
+   「这个 clip 还没到」（`motionsLoading`）。日志：`controller:idle:…:ms=`、
+   `controller:motions:loaded=n/N:ms=`。
+11. **待机素材的表情通道会和工具表情抢**：`idle_stand` 自带 `blink` / `blinkLeft` / `oh` / `sad`
+   权重轨道（外加 lookAt 轨道，所以眨眼/视线本来就是素材给的，别再写第二个眨眼驱动器），
+   mixer 每帧都会把这些通道写回素材的值 → `set_expression('sorrow'|'blink'|'oh')` 下一帧就被
+   静默覆盖（VRM1↔VRM0 名字重叠：sad↔sorrow、oh↔o、blinkLeft↔blink_l）。渲染顺序因此改成
+   `mixer.update → reassertExpression() → vrm.update`：工具表情永远压得住素材表情，
+   顺带消掉了「表情慢一帧」。verify 会交叉校验素材的表情通道在模型上都有对应 blend shape。
 
 ## 验证
 
@@ -72,7 +87,9 @@ DSH 生态插件（`dsh plugin add` 安装）：常驻 dsh 界面前层的 AI �
 注册，断言覆盖：pose 链路三条 + 资产导入/切换/删除 → enum 热更新 + 右栏 tab 两阶段注册
 （含「宿主无 sidebarRightTabs 时静默降级」与「apply 全程无 console.error」）+ 动作 URL 形状契约
 （info 发 `{name,builtin}`、`assetNames`/`motionUrl` 归一、真实 200、旧写法 404）+ 待机素材阈值
-（循环接缝/胯部位移）+ 拖拽夹取不越界。改 `pose.ts`/`tools.ts`/`client/*` 之后必跑。client 侧的
+（循环接缝/胯部位移）+ 拖拽夹取不越界 + 待机素材的表情通道在模型上可绑 + 动作加载计划
+（待机单独先加载）。改 `pose.ts`/`tools.ts`/`client/*` 之后必跑。CI（.github/workflows/ci.yml）
+在 push/PR 上跑 `npm ci && build && typecheck && verify:bridge`。client 侧的
 ctx 替身（`makeClientCtx`）刻意复刻了 Cordis proxy 的两条语义（未 inject 直读抛错、
 `ctx.inject` 回调拿到子 ctx），改动莫削弱它，否则第 6 条那个 bug 在验证里就看不出来了。
 
@@ -81,8 +98,12 @@ ctx 替身（`makeClientCtx`）刻意复刻了 Cordis proxy 的两条语义（�
 - 桌面端 profile 与 web profile 各有一份 link 安装；改完 lib/ 两个宿主都要重启才生效。
   **只改了 client 半部（lib/client.js）时可先刷新页面/重开窗口**，宿主仍缓存旧 client bundle 时才重启。
 - 管理页 tab 不会自动弹出：右栏引导页（座位条上的「+」/guide tab）里点「数字人资产管理」才打开。
-- 待机动作看不着时先看 `window.__dshAvatarLog` 的 `controller:idle:base=vrma|procedural:tracks=N:unbound=M`：
-  `unbound>0` 说明模型缺骨骼/轨道名不匹配；`base=procedural` 说明 idle.vrma 没加载成功。
+- 待机动作看不着时先看 `window.__dshAvatarLog`：`controller:idle:source=<素材|procedural>:tracks=N:unbound=M:face=…:faceUnbound=K:ms=T`
+  —— `unbound>0` 模型缺骨骼、`faceUnbound>0` 模型的 blend shape 对不上素材的表情通道、
+  `source=procedural` 说明待机素材没加载成功；`controller:motions:loaded=n/N` 是后台动作的进度。
+- 本机跑 `npm ci` 会失败（`~/.npm` 里有 root 属主的缓存文件，旧版 npm 遗留）：用
+  `npm ci --cache "$TMPDIR/npm-cache"` 绕过，或 `sudo chown -R $(id -u):$(id -g) ~/.npm`。
+  GitHub Runner 上是干净缓存，CI 不受影响。
 - verify 每次 mkdtemp 一个临时数据目录（OS 自动清理，无残留污染）。
 - 上传端点读原始 body（无 multipart）；VRMA 文件仅校验魔数，播放失败由客户端 console.warn 兜底。
 - `package.json` 的 `dsh.client.inject` 只列了 locale / ui-slots（sidebar-right 由 dsh web 自带，

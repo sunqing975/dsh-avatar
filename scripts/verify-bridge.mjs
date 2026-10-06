@@ -476,6 +476,55 @@ if (hipsYRange > 0.02) { console.error(`FAIL: idle_stand.vrma 胯部上下起伏
 if (hipsXZRange > 0.05) { console.error(`FAIL: idle_stand.vrma 胯部水平位移 ${(hipsXZRange * 100).toFixed(1)}cm 太大（会滑）`); process.exit(1) }
 console.log(`OK  idle_stand.vrma：${boneCount} 骨骼 / ${duration.toFixed(1)}s，循环接缝 ${seamMax.toFixed(2)}°，胯部起伏 ${(hipsYRange * 100).toFixed(1)}cm、水平 ${(hipsXZRange * 100).toFixed(1)}cm（站得住）`)
 
+// 素材自带的五官通道必须能在模型上绑上（否则表情「静默失效」）：
+// VRMA 用 VRM1 的 preset 名（blinkLeft/oh/sad…），模型是 VRM0（blink_l/o/sorrow…）。
+const VRM1_TO_VRM0 = {
+  aa: 'a', ih: 'i', ou: 'u', ee: 'e', oh: 'o',
+  blink: 'blink', blinkLeft: 'blink_l', blinkRight: 'blink_r',
+  happy: 'joy', angry: 'angry', sad: 'sorrow', relaxed: 'fun',
+  lookUp: 'lookup', lookDown: 'lookdown', lookLeft: 'lookleft', lookRight: 'lookright',
+  neutral: 'neutral',
+}
+const facePresets = Object.keys(vrmaExt.expressions?.preset ?? {})
+if (facePresets.length === 0) {
+  console.error('FAIL: idle_stand.vrma 没有表情通道（待机的眨眼就没了）')
+  process.exit(1)
+}
+if (!facePresets.includes('blink')) {
+  console.error('FAIL: idle_stand.vrma 没有 blink 通道（待机不眨眼会显得很假）', facePresets)
+  process.exit(1)
+}
+// 解析模型的 blend shape（nuomi.vrm 是 GLB）
+const modelBuf = readFileSync(new URL('assets/models/nuomi.vrm', PKG))
+let modelJson = null
+if (modelBuf.toString('latin1', 0, 4) === 'glTF') {
+  const len = modelBuf.readUInt32LE(12)
+  modelJson = JSON.parse(modelBuf.toString('utf8', 20, 20 + len))
+} else {
+  modelJson = JSON.parse(modelBuf.toString('utf8'))
+}
+const modelPresets = (modelJson.extensions?.VRM?.blendShapeMaster?.blendShapeGroups ?? [])
+  .map(g => g.presetName ?? g.name)
+const missingFaces = facePresets.filter(p => !modelPresets.includes(VRM1_TO_VRM0[p] ?? p))
+if (missingFaces.length > 0) {
+  console.error(`FAIL: idle_stand 的表情通道在模型上没有对应 blend shape：${missingFaces.join(', ')}（模型有：${modelPresets.join(', ')}）`)
+  process.exit(1)
+}
+console.log(`OK  idle_stand 的表情通道 ${facePresets.join(', ')} 在模型上都有对应 blend shape；lookAt 轨道=${vrmaExt.lookAt ? '有' : '无'}`)
+
+// 动作加载计划：待机素材单独先加载，其余动作并行后台拉（不能让 Body Block 的 2.6MB 挡着待机）
+const plan = clientModule.planMotionLoad(info.animations, 'idle_stand')
+if (plan.idle?.name !== 'idle_stand') { console.error('FAIL: 待机素材没被单独挑出来', plan.idle); process.exit(1) }
+if (plan.rest.some(a => a.name === 'idle_stand')) { console.error('FAIL: 待机素材同时出现在后台列表里，会被下两次'); process.exit(1) }
+if (plan.rest.length !== info.animations.length - 1) { console.error('FAIL: 后台列表条数不对', plan.rest.length); process.exit(1) }
+if (plan.rest[0]?.name !== info.animations[0].name) { console.error('FAIL: 后台列表顺序被打乱'); process.exit(1) }
+const noIdlePlan = clientModule.planMotionLoad(info.animations, null)
+if (noIdlePlan.idle !== null || noIdlePlan.rest.length !== info.animations.length) {
+  console.error('FAIL: 没有待机素材时应当全部走后台列表')
+  process.exit(1)
+}
+console.log(`OK  动作加载计划：先加载 idle_stand（${idleStandEntry ? '阻塞' : ''}），其余 ${plan.rest.length} 个（含 Body Block 2.6MB）并行后台拉`)
+
 if (clientModule.pickIdleMotion(['bow', 'idle', 'idle_stand']) !== 'idle_stand') {
   console.error('FAIL: 有 idle_stand 时应优先用它做待机'); process.exit(1)
 }

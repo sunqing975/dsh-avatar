@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # npm ci 会跑 prepare -> build（lib/ 是 gitignore 的，verify 需要它）
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建（host + client 两个产物）
+        run: npm run build
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      # 权威验证：真加载 lib/、真起 HTTP、真跑客户端 bundle 的轮询与注册逻辑
+      - name: 端到端验证
+        run: npm run verify:bridge

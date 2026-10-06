@@ -61,7 +61,7 @@ export const ASSET_TAB_ID = 'dsh-avatar-assets'
  * Host 发 `{name, builtin}`、客户端按裸字符串处理时，动作 URL 会变成
  * `%5Bobject%20Object%5D.vrma` → 全部 404 → clips 为空、没有 idle、数字人僵在 bind pose。
  */
-export { assetNames, motionUrl } from './assets.ts'
+export { assetNames, motionUrl, planMotionLoad } from './assets.ts'
 
 /**
  * 待机动作的放大/程序化组装（实现在 idle-motion.ts，vrm.ts 用同一份）。

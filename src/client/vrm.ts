@@ -2,8 +2,8 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
-import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation'
-import { assetName, motionUrl, type AssetEntry } from './assets.ts'
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip, type VRMAnimation } from '@pixiv/three-vrm-animation'
+import { assetName, assetNames, motionUrl, planMotionLoad, type AssetEntry } from './assets.ts'
 import { buildIdleClip, idleOptionsFromWindow, pickIdleMotion, trackNodeName } from './idle-motion.ts'
 import { NO_PADDING, type FloatingPadding } from './drag.ts'
 
@@ -44,6 +44,12 @@ export class AvatarController {
   private returnToIdle = false
   /** 待机姿势生效后要等几帧再量人物边距（mixer 在 vrm.update 之后才写姿势）。 */
   private paddingCountdown = 0
+  /** 后台动作是否还在加载（期间到达的 play_motion 指令先挂起，加载完补播）。 */
+  private motionsLoading = false
+  private motionTotal = 0
+  private motionLoaded = 0
+  /** 绑定动作到骨骼的串行队列：createVRMAnimationClip 会动 vrm（lookAt proxy），不能并发。 */
+  private clipQueue: Promise<void> = Promise.resolve()
 
   /**
    * 当前姿势下人物本体相对画布的透明边距（px）。
@@ -144,8 +150,11 @@ export class AvatarController {
   }
 
   /**
-   * 加载 VRMA 动作清单：每个动作 fetch 对应文件并绑定到当前 VRM 的骨骼。
-   * 必须在 loadModel 之后调用。
+   * 加载 VRMA 动作清单。必须在 loadModel 之后调用。
+   *
+   * 顺序很重要：**待机素材先单独加载并立刻播**，其余动作并行扔到后台。
+   * 内置动作合计约 3.6MB（`Body Block.vrma` 一个就 2.6MB 且排在清单第一个），
+   * 早年串行全下完才播待机，等于让人举着手在 bind pose 站好几秒。
    *
    * 入参用 `AssetEntry`（`{name, builtin}` 或裸字符串）：Host 的资产注册表发对象，
    * 这里统一归一化再拼 URL，避免把对象 encode 成 `%5Bobject%20Object%5D` 导致动作全 404。
@@ -153,50 +162,87 @@ export class AvatarController {
   async loadAnimations(entries: readonly AssetEntry[], baseUrl: string): Promise<void> {
     const vrm = this.vrm
     if (!vrm) return
-    const loader = new GLTFLoader()
-    loader.register((parser) => new VRMAnimationLoaderPlugin(parser))
-    for (const entry of entries) {
-      const name = assetName(entry)
-      try {
-        const url = motionUrl(baseUrl, entry)
-        const gltf = await loader.loadAsync(url)
-        const vrmAnimation = (gltf.userData.vrmAnimations ?? [])[0]
-        if (!vrmAnimation) {
-          // eslint-disable-next-line no-console
-          console.warn('[dsh-avatar] motion %s has no vrmAnimations', name)
-          continue
-        }
-        const clip = createVRMAnimationClip(vrmAnimation, vrm)
-        this.clips.set(name, clip)
-      } catch (err) {
-        // 单个动作加载失败不影响其余动作。
-        // eslint-disable-next-line no-console
-        console.warn('[dsh-avatar] failed to load motion %s: %s', name, err instanceof Error ? err.message : err)
-      }
-    }
-    // 待机动作：优先用真实素材（idle_stand → idle），原样播放、锁住胯部位移（防「飘」）；
-    // 素材缺失才退化为纯程序化上半身待机。见 idle-motion.ts 顶部的结论。
     const idleOptions = idleOptionsFromWindow(window)
-    const idleSource = pickIdleMotion(this.clips.keys(), idleOptions.motion)
+    // 已有 clip 的情况（理论上不该有，兜底）：先清掉，避免残留旧模型的绑定。
+    const idleSource = pickIdleMotion(assetNames(entries), idleOptions.motion)
+    const { idle: idleEntry, rest } = planMotionLoad(entries, idleSource)
+
+    // ---------- 1) 待机：阻塞加载，先把人放下待机 ----------
+    const idleStarted = now()
+    if (idleEntry) await this.loadMotion(vrm, idleEntry, baseUrl)
     const idleBase = idleSource ? this.clips.get(idleSource) ?? null : null
     const idle = buildIdleClip(vrm, idleBase, idleOptions)
     this.clips.set('idle', idle)
     const unbound = idle.tracks.filter(track => !THREE.PropertyBinding.findNode(vrm.scene, trackNodeName(track)))
-    this.logLine(`controller:idle:source=${idleSource ?? 'procedural'}:tracks=${idle.tracks.length}:unbound=${unbound.length}:gain=${idleOptions.gain}:lockHips=${idleOptions.lockHipsTranslation}`)
+    // 素材自带的五官通道（idle_stand 有 blink/blinkLeft/oh/sad + lookAt）：绑不上的话表情会静默失效。
+    const faceTracks = idle.tracks.filter(track => track.name.includes('.weight'))
+    const faceUnbound = faceTracks.filter(track => !THREE.PropertyBinding.findNode(vrm.scene, trackNodeName(track)))
+    this.logLine(`controller:idle:source=${idleSource ?? 'procedural'}:tracks=${idle.tracks.length}:unbound=${unbound.length}:gain=${idleOptions.gain}:lockHips=${idleOptions.lockHipsTranslation}:face=${faceTracks.map(t => trackNodeName(t)).join('|') || 'none'}:faceUnbound=${faceUnbound.length}:ms=${Math.round(now() - idleStarted)}`)
     if (unbound.length > 0) {
       // eslint-disable-next-line no-console
       console.warn('[dsh-avatar] idle clip 有未绑定轨道（模型缺骨骼？）:', unbound.map(t => t.name).join(', '))
+    }
+    if (faceUnbound.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[dsh-avatar] idle 的表情通道绑不上（模型没有对应 blend shape？）:', faceUnbound.map(t => t.name).join(', '))
     }
     // 常驻待机循环。
     this.playMotion('idle', true)
     // 等待机姿势真正写进骨骼后再量一次人物边距（拖拽夹取要用）。
     this.paddingCountdown = 2
-    // 动作清单就绪后，补播加载期间到达的动作指令。
-    if (this.pendingMotion !== null) {
-      const motion = this.pendingMotion
-      this.pendingMotion = null
-      this.playMotion(motion)
+
+    // ---------- 2) 其余动作：并行后台加载，不挡待机 ----------
+    const restStarted = now()
+    this.motionsLoading = rest.length > 0
+    this.motionTotal = rest.length
+    this.motionLoaded = 0
+    void Promise.all(rest.map(async (entry) => {
+      const name = assetName(entry)
+      // 网络（最贵的一段）并行；绑定到骨骼是 CPU 且会动 vrm（lookAt proxy），排成串行队列。
+      const vrmAnimation = await this.fetchVrmAnimation(entry, baseUrl)
+      if (!vrmAnimation) return
+      await (this.clipQueue = this.clipQueue.then(() => {
+        this.clips.set(name, createVRMAnimationClip(vrmAnimation, vrm))
+        this.motionLoaded += 1
+      }))
+    })).then(() => {
+      this.motionsLoading = false
+      this.logLine(`controller:motions:loaded=${this.motionLoaded}/${this.motionTotal}:ms=${Math.round(now() - restStarted)}`)
+      // 后台加载期间到达的动作指令，现在补播（playMotion 会把它挂在 pendingMotion 上）。
+      if (this.pendingMotion !== null) {
+        const motion = this.pendingMotion
+        this.pendingMotion = null
+        this.playMotion(motion)
+      }
+    })
+  }
+
+  /** fetch + 解析一个 VRMA，返回原始 VRMAnimation（绑定到骨骼交给串行队列做）。 */
+  private async fetchVrmAnimation(entry: AssetEntry, baseUrl: string): Promise<VRMAnimation | null> {
+    const name = assetName(entry)
+    try {
+      const loader = new GLTFLoader()
+      loader.register((parser) => new VRMAnimationLoaderPlugin(parser))
+      const gltf = await loader.loadAsync(motionUrl(baseUrl, entry))
+      const vrmAnimation = ((gltf.userData.vrmAnimations ?? []) as VRMAnimation[])[0]
+      if (!vrmAnimation) {
+        // eslint-disable-next-line no-console
+        console.warn('[dsh-avatar] motion %s has no vrmAnimations', name)
+        return null
+      }
+      return vrmAnimation
+    } catch (err) {
+      // 单个动作加载失败不影响其余动作。
+      // eslint-disable-next-line no-console
+      console.warn('[dsh-avatar] failed to load motion %s: %s', name, err instanceof Error ? err.message : err)
+      return null
     }
+  }
+
+  /** 加载并绑定单个动作（待机素材走这条路，需要立刻可用）。 */
+  private async loadMotion(vrm: VRM, entry: AssetEntry, baseUrl: string): Promise<void> {
+    const vrmAnimation = await this.fetchVrmAnimation(entry, baseUrl)
+    if (vrmAnimation) this.clips.set(assetName(entry), createVRMAnimationClip(vrmAnimation, vrm))
   }
 
   /**
@@ -260,8 +306,9 @@ export class AvatarController {
     const mixer = this.mixer
     const clip = this.clips.get(name)
     if (!mixer || !clip) {
-      // 动作清单还在加载（clips 为空）时先暂存，就绪后补播；否则直接丢弃并记录。
-      if (this.clips.size === 0 && !this.disposed) this.pendingMotion = name
+      // 动作还没加载到：待机是阻塞加载的，所以「clips 为空」不再是唯一判据 ——
+      // 后台并行加载其余动作期间到达的指令也要挂起，加载完补播，而不是静默丢掉。
+      if (!this.disposed && (this.clips.size === 0 || this.motionsLoading)) this.pendingMotion = name
       else w.__dshAvatarLog?.push(`controller:motion-missing:${name}`)
       return
     }
@@ -314,6 +361,20 @@ export class AvatarController {
   }
 
   /**
+   * 把工具驱动的表情「压」回 1。
+   *
+   * 待机素材自带五官通道（`idle_stand` 有 blink / blinkLeft / oh / sad），mixer 每帧都会把
+   * 这些通道的权重写成素材里的值 —— 于是 `set_expression('sorrow'|'blink'|'oh')` 会在下一帧
+   * 被静默覆盖掉（通道名重叠：sorrow↔sad、o↔oh、blink_l↔blinkLeft）。
+   * 这里在 mixer 写完、vrm.update 应用之前再压一次，保证「工具表情优先于待机表情」。
+   */
+  private reassertExpression(): void {
+    const name = this.currentExpression
+    if (name === null) return
+    this.vrm?.expressionManager?.setValue(name, 1)
+  }
+
+  /**
    * 资产变更后重载数字人：保留 renderer/camera/灯光，只重建模型与动作。
    * 为什么不新建 AvatarController：同一个 canvas 上 dispose() 会 forceContextLoss，
    * 丢失后的 WebGL context 无法复用，新 renderer 会拿到坏 context。
@@ -341,6 +402,10 @@ export class AvatarController {
     this.mixer = null
     this.clips.clear()
     this.actions.clear()
+    this.motionsLoading = false
+    this.motionTotal = 0
+    this.motionLoaded = 0
+    this.clipQueue = Promise.resolve()
   }
 
   dispose(): void {
@@ -369,16 +434,24 @@ export class AvatarController {
   private loop(): void {
     if (this.disposed) return
     const delta = this.clock.getDelta()
-    if (this.vrm) this.vrm.update(delta)
+    // 顺序：先让 mixer 写姿势/表情权重，再把工具表情压回去，最后 vrm.update 把姿势
+    // 与表情真正应用到骨骼/morph（早期顺序相反，会让表情慢一帧，还会被素材表情盖掉）。
     this.mixer?.update(delta)
+    this.reassertExpression()
+    if (this.vrm) this.vrm.update(delta)
     // 'finished' 事件在 mixer.update 内部派发；切场景放到下一帧做，避免在派发过程中启停 action。
     if (this.returnToIdle) {
       this.returnToIdle = false
       this.playMotion('idle', true)
     }
-    // 待机姿势生效后再量人物边距（mixer.update 之后姿势才写进骨骼，所以要等一帧）。
+    // 待机姿势生效后再量人物边距（姿势要等 vrm.update 写进骨骼，所以隔一帧量）。
     if (this.paddingCountdown > 0 && --this.paddingCountdown === 0) this.measurePadding()
     this.renderer.render(this.scene, this.camera)
     this.rafId = requestAnimationFrame(() => this.loop())
   }
+}
+
+/** 时间戳：优先 performance.now（浏览器一定有，Node 里兜底 Date.now）。 */
+function now(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now()
 }
