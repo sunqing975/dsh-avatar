@@ -57,16 +57,21 @@ DSH 生态插件（`dsh plugin add` 安装）：常驻 dsh 界面前层的 AI �
    `lockHipsTranslation` 丢掉胯部位移轨道；纯程序化兜底只驱动上半身。verify 有对应断言
    （默认 clip 不得含 `hips.position`；兜底 clip 不得含任何 hips 轨道；`idle_stand.vrma`
    自身循环接缝 <1.5°、胯部起伏 <2cm、水平位移 <5cm）。
+9. **浮层拖拽要夹在视口内**（2026-10-06 修「能拖到窗口外」）：`position: fixed` 的坐标就是视口
+   像素，边界要按「整个浮层完整可见」算 —— 早先写成 `left ∈ [-WIDTH+60, innerWidth-60]`、
+   `top ∈ [0, innerHeight-60]`，等于允许大半个人被推出窗口。现在统一走
+   `src/client/drag.ts` 的 `clampToViewport()`（`0 ≤ left ≤ max(0, innerWidth - WIDTH)`，
+   视口比浮层小时退化为贴左上），并在 `resize` 后重新夹取。verify 有纯函数断言。
 
 ## 验证
 
 `npm run verify:bridge` 是权威验证：真实加载 lib/index.js + lib/client.js、真实 HTTP、真实工具
 注册，断言覆盖：pose 链路三条 + 资产导入/切换/删除 → enum 热更新 + 右栏 tab 两阶段注册
 （含「宿主无 sidebarRightTabs 时静默降级」与「apply 全程无 console.error」）+ 动作 URL 形状契约
-（info 发 `{name,builtin}`、`assetNames`/`motionUrl` 归一、真实 200、旧写法 404）。改 `pose.ts`/
-`tools.ts`/`client/*` 之后必跑。client 侧的 ctx 替身（`makeClientCtx`）刻意复刻了
-Cordis proxy 的两条语义（未 inject 直读抛错、`ctx.inject` 回调拿到子 ctx），改动莫削弱它，
-否则第 6 条那个 bug 在验证里就看不出来了。
+（info 发 `{name,builtin}`、`assetNames`/`motionUrl` 归一、真实 200、旧写法 404）+ 待机素材阈值
+（循环接缝/胯部位移）+ 拖拽夹取不越界。改 `pose.ts`/`tools.ts`/`client/*` 之后必跑。client 侧的
+ctx 替身（`makeClientCtx`）刻意复刻了 Cordis proxy 的两条语义（未 inject 直读抛错、
+`ctx.inject` 回调拿到子 ctx），改动莫削弱它，否则第 6 条那个 bug 在验证里就看不出来了。
 
 ## 遗留/注意
 

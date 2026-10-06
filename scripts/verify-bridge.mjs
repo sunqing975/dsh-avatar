@@ -484,6 +484,30 @@ if (clientModule.pickIdleMotion(['bow', 'idle']) !== 'idle' || clientModule.pick
 }
 console.log('OK  待机优先级 idle_stand → idle → 程序化兜底')
 
+// ---------- 4.8 浮层拖拽必须被夹在视口内（曾能拖到窗口外，大半个人看不见） ----------
+const clamp = clientModule.clampToViewport
+const W = 220, H = 300, VW = 1440, VH = 900
+const expect = (label, got, left, top) => {
+  if (got.left !== left || got.top !== top) {
+    console.error(`FAIL: ${label} → ${JSON.stringify(got)}，期望 {left:${left},top:${top}}`)
+    process.exit(1)
+  }
+}
+expect('拖出左上角', clamp(-500, -500, VW, VH, W, H), 0, 0)
+expect('拖出右下角', clamp(9999, 9999, VW, VH, W, H), VW - W, VH - H)
+expect('上边界恰好贴边', clamp(VW - W, VH - H, VW, VH, W, H), VW - W, VH - H)
+expect('视口内原样保留', clamp(100, 200, VW, VH, W, H), 100, 200)
+expect('窄窗口（比浮层还小）贴左上', clamp(-50, -50, 180, 200, W, H), 0, 0)
+// 关键回归：任何输入都不能让浮层整体离开视口
+for (const [l, t] of [[-1000, 500], [1000, -1000], [VW, VH], [-W, -H], [VW / 2, VH / 2]]) {
+  const p = clamp(l, t, VW, VH, W, H)
+  if (p.left < 0 || p.top < 0 || p.left + W > VW || p.top + H > VH) {
+    console.error(`FAIL: 夹取后仍越界 left=${p.left} top=${p.top}（浮层 ${W}×${H}，视口 ${VW}×${VH}）`)
+    process.exit(1)
+  }
+}
+console.log('OK  拖拽夹取：四边都不越界，窄窗口退化贴左上（浮层始终完整可见）')
+
 // ---------- 5. apply 全程不允许出现任何 console.error（注册失败即回归） ----------
 console.error = nativeConsoleError
 if (applyErrors.length > 0) {

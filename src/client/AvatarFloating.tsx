@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { avatarEvents, type ExpressionDetail, type MotionDetail } from './event-bus.ts'
 import { AvatarController } from './vrm.ts'
 import type { AssetEntry } from './assets.ts'
+import { clampToViewport, type FloatingPosition } from './drag.ts'
 
 const MODEL_URL = '/dsh-avatar/model.vrm'
 /** 动作服务前缀：/dsh-avatar/animations/<name>.vrma（用户导入优先于内置）。 */
@@ -28,8 +29,8 @@ export function AvatarFloating(): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const controllerRef = useRef<AvatarController | null>(null)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
-  // 拖拽位置（left/top 像素）；null 表示尚未拖过，用默认右下角。
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  // 拖拽位置（left/top 像素）；null 表示尚未拖过，用默认右下角。始终被夹在视口内。
+  const [pos, setPos] = useState<FloatingPosition | null>(null)
   const dragRef = useRef<{ startX: number; startY: number; origLeft: number; origTop: number } | null>(null)
 
   useEffect(() => {
@@ -117,8 +118,27 @@ export function AvatarFloating(): React.JSX.Element {
     }
   }, [])
 
+  /** 默认位置：右下角贴边（MARGIN 间距），并且一定落在视口内。 */
+  const defaultPos = (): FloatingPosition => clampToViewport(
+    window.innerWidth - WIDTH - MARGIN,
+    window.innerHeight - HEIGHT - MARGIN,
+    window.innerWidth,
+    window.innerHeight,
+    WIDTH,
+    HEIGHT,
+  )
+
+  /** 视口尺寸变化（窗口缩放/旋转）后重新夹取，避免浮层被留在窗口外。 */
+  useEffect(() => {
+    const onResize = (): void => {
+      setPos(prev => prev === null ? prev : clampToViewport(prev.left, prev.top, window.innerWidth, window.innerHeight, WIDTH, HEIGHT))
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
-    const current = pos ?? { left: window.innerWidth - WIDTH - MARGIN, top: window.innerHeight - HEIGHT - MARGIN }
+    const current = pos ?? defaultPos()
     dragRef.current = { startX: e.clientX, startY: e.clientY, origLeft: current.left, origTop: current.top }
     ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
     e.preventDefault()
@@ -127,16 +147,22 @@ export function AvatarFloating(): React.JSX.Element {
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
     const drag = dragRef.current
     if (!drag) return
-    const left = Math.min(Math.max(drag.origLeft + e.clientX - drag.startX, -WIDTH + 60), window.innerWidth - 60)
-    const top = Math.min(Math.max(drag.origTop + e.clientY - drag.startY, 0), window.innerHeight - 60)
-    setPos({ left, top })
+    // 整个浮层必须留在视口内：拖出窗口等于把人拖没了。
+    setPos(clampToViewport(
+      drag.origLeft + e.clientX - drag.startX,
+      drag.origTop + e.clientY - drag.startY,
+      window.innerWidth,
+      window.innerHeight,
+      WIDTH,
+      HEIGHT,
+    ))
   }
 
   const onPointerUp = (): void => {
     dragRef.current = null
   }
 
-  const current = pos ?? { left: window.innerWidth - WIDTH - MARGIN, top: window.innerHeight - HEIGHT - MARGIN }
+  const current = pos ?? defaultPos()
 
   return (
     <div

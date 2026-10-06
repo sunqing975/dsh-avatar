@@ -69,6 +69,9 @@ export { assetNames, motionUrl } from './assets.ts'
  */
 export { amplifyClip, buildIdleClip, pickIdleMotion, IDLE_GAIN, IDLE_MOTION_PREFERENCE } from './idle-motion.ts'
 
+/** 浮层拖拽的视口夹取（实现在 drag.ts，AvatarFloating 用同一份）。导出给 verify 做纯函数断言。 */
+export { clampToViewport } from './drag.ts'
+
 /** 统一日志通道：同时写 console 与 window.__dshAvatarLog（排查用）。 */
 export function log(line: string): void {
   const w = window as unknown as { __dshAvatarLog?: string[] }
