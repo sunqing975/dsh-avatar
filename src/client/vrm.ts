@@ -3,6 +3,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
 import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation'
+import { assetName, motionUrl, type AssetEntry } from './assets.ts'
+import { buildIdleClip, idleOptionsFromWindow, pickIdleMotion, trackNodeName } from './idle-motion.ts'
 
 /** 表情自动重置延迟（毫秒），避免表情一直僵在脸上。 */
 const EXPRESSION_RESET_MS = 5000
@@ -132,15 +134,19 @@ export class AvatarController {
   /**
    * 加载 VRMA 动作清单：每个动作 fetch 对应文件并绑定到当前 VRM 的骨骼。
    * 必须在 loadModel 之后调用。
+   *
+   * 入参用 `AssetEntry`（`{name, builtin}` 或裸字符串）：Host 的资产注册表发对象，
+   * 这里统一归一化再拼 URL，避免把对象 encode 成 `%5Bobject%20Object%5D` 导致动作全 404。
    */
-  async loadAnimations(names: string[], baseUrl: string): Promise<void> {
+  async loadAnimations(entries: readonly AssetEntry[], baseUrl: string): Promise<void> {
     const vrm = this.vrm
     if (!vrm) return
     const loader = new GLTFLoader()
     loader.register((parser) => new VRMAnimationLoaderPlugin(parser))
-    for (const name of names) {
+    for (const entry of entries) {
+      const name = assetName(entry)
       try {
-        const url = `${baseUrl}/animations/${encodeURIComponent(name)}.vrma`
+        const url = motionUrl(baseUrl, entry)
         const gltf = await loader.loadAsync(url)
         const vrmAnimation = (gltf.userData.vrmAnimations ?? [])[0]
         if (!vrmAnimation) {
@@ -156,16 +162,36 @@ export class AvatarController {
         console.warn('[dsh-avatar] failed to load motion %s: %s', name, err instanceof Error ? err.message : err)
       }
     }
-    // 有 idle 则常驻待机循环。
-    if (this.clips.has('idle')) {
-      this.playMotion('idle', true)
+    // 待机动作：优先用真实素材（idle_stand → idle），原样播放、锁住胯部位移（防「飘」）；
+    // 素材缺失才退化为纯程序化上半身待机。见 idle-motion.ts 顶部的结论。
+    const idleOptions = idleOptionsFromWindow(window)
+    const idleSource = pickIdleMotion(this.clips.keys(), idleOptions.motion)
+    const idleBase = idleSource ? this.clips.get(idleSource) ?? null : null
+    const idle = buildIdleClip(vrm, idleBase, idleOptions)
+    this.clips.set('idle', idle)
+    const unbound = idle.tracks.filter(track => !THREE.PropertyBinding.findNode(vrm.scene, trackNodeName(track)))
+    this.logLine(`controller:idle:source=${idleSource ?? 'procedural'}:tracks=${idle.tracks.length}:unbound=${unbound.length}:gain=${idleOptions.gain}:lockHips=${idleOptions.lockHipsTranslation}`)
+    if (unbound.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[dsh-avatar] idle clip 有未绑定轨道（模型缺骨骼？）:', unbound.map(t => t.name).join(', '))
     }
+    // 常驻待机循环。
+    this.playMotion('idle', true)
     // 动作清单就绪后，补播加载期间到达的动作指令。
     if (this.pendingMotion !== null) {
       const motion = this.pendingMotion
       this.pendingMotion = null
       this.playMotion(motion)
     }
+  }
+
+  /** 统一的排查日志：写 console 并进 window.__dshAvatarLog。 */
+  private logLine(line: string): void {
+    // eslint-disable-next-line no-console
+    console.log('[dsh-avatar]', line)
+    const w = window as unknown as { __dshAvatarLog?: string[] }
+    w.__dshAvatarLog = w.__dshAvatarLog ?? []
+    w.__dshAvatarLog.push(line)
   }
 
   /** 播放动作：切换前停掉其他动作。loop=true 用于 idle 待机循环。 */
@@ -229,6 +255,36 @@ export class AvatarController {
       }
       this.currentExpression = null
     }, EXPRESSION_RESET_MS)
+  }
+
+  /**
+   * 资产变更后重载数字人：保留 renderer/camera/灯光，只重建模型与动作。
+   * 为什么不新建 AvatarController：同一个 canvas 上 dispose() 会 forceContextLoss，
+   * 丢失后的 WebGL context 无法复用，新 renderer 会拿到坏 context。
+   */
+  async reload(modelUrl: string, animations: readonly AssetEntry[], baseUrl: string): Promise<void> {
+    if (this.disposed) return
+    this.resetResources()
+    await this.loadModel(modelUrl)
+    await this.loadAnimations(animations, baseUrl)
+  }
+
+  /** 释放模型/动作相关资源，保留渲染设施。 */
+  private resetResources(): void {
+    if (this.resetTimer !== null) clearTimeout(this.resetTimer)
+    this.resetTimer = null
+    this.pendingExpression = null
+    this.pendingMotion = null
+    this.returnToIdle = false
+    this.currentExpression = null
+    if (this.vrm) {
+      this.scene?.remove(this.vrm.scene)
+      VRMUtils.deepDispose(this.vrm.scene)
+      this.vrm = null
+    }
+    this.mixer = null
+    this.clips.clear()
+    this.actions.clear()
   }
 
   dispose(): void {
