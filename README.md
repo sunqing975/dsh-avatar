@@ -6,6 +6,8 @@ DSH（DeepSeek Harness）生态插件：常驻 dsh 界面前层的 AI 数字人�
 
 纯表现层——VRM 形象渲染 + 大模型通过工具驱动表情与动作，不涉及人格、记忆、字幕等业务逻辑。与 nuomi 项目思想对齐，但代码独立全新（nuomi 冻结不动）。
 
+后续待办与想法见 [TODO.md](TODO.md)；已踩过的坑与当前状态见 [AGENT.md](AGENT.md)。
+
 ## 能力
 
 - **前层常驻**：数字人悬浮在 dsh 界面右下角（`shell.overlay` 全局前层），所有页面/会话常驻可见，不占用任何 tab。
