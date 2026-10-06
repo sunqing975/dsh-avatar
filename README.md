@@ -23,8 +23,11 @@ DSH（DeepSeek Harness）生态插件：常驻 dsh 界面前层的 AI 数字人�
     window.__dshAvatarIdle = { motion: ['idle_stand'], gain: 1.5, lockHipsTranslation: true, procedural: false }
     ```
     想看诊断：`window.__dshAvatarLog` 里的 `controller:idle:source=…:tracks=…:unbound=…`。
-- **可拖拽，且始终留在窗口内**：浮层按住即可拖；位置始终被夹在视口内
-  （`0 ≤ left ≤ innerWidth - 220`、top 同理，窗口缩放后重新夹取），不会出现「拖到窗口外看不见」。
+- **可拖拽，且拖到边就是「人」贴边**：浮层按住即可拖。夹取按**人物本体**算，而不是按
+  220×300 的画布方框 —— 站立的人物只有约 74px 宽（其余是透明空边），若按方框贴边，
+  看上去会「离边框还差 70 多像素就拖不动了」。运行时会把当前姿势的蒙皮包围盒投影到画布，
+  量出透明边距（`controller:padding:l=…:r=…:t=…:b=…`），据此允许空画布溢出视口、
+  但人物本体始终完整留在窗口内；窗口缩放后会重新夹取。
 - **资产管理页（右侧边栏 tab「数字人」）**：
   - 导入 VRM 模型 / VRMA 动作（文件直传，即传即用）；
   - 多模型列表 + 一键切换，导入的模型自动成为当前模型；

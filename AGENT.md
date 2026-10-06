@@ -57,11 +57,14 @@ DSH 生态插件（`dsh plugin add` 安装）：常驻 dsh 界面前层的 AI �
    `lockHipsTranslation` 丢掉胯部位移轨道；纯程序化兜底只驱动上半身。verify 有对应断言
    （默认 clip 不得含 `hips.position`；兜底 clip 不得含任何 hips 轨道；`idle_stand.vrma`
    自身循环接缝 <1.5°、胯部起伏 <2cm、水平位移 <5cm）。
-9. **浮层拖拽要夹在视口内**（2026-10-06 修「能拖到窗口外」）：`position: fixed` 的坐标就是视口
-   像素，边界要按「整个浮层完整可见」算 —— 早先写成 `left ∈ [-WIDTH+60, innerWidth-60]`、
-   `top ∈ [0, innerHeight-60]`，等于允许大半个人被推出窗口。现在统一走
-   `src/client/drag.ts` 的 `clampToViewport()`（`0 ≤ left ≤ max(0, innerWidth - WIDTH)`，
-   视口比浮层小时退化为贴左上），并在 `resize` 后重新夹取。verify 有纯函数断言。
+9. **浮层拖拽要按「人物本体」夹取，不是按画布方框**（2026-10-06 修两次）：`position: fixed`
+   的坐标就是视口像素。第一版写成 `left ∈ [-WIDTH+60, innerWidth-60]`，能把人推出窗口；
+   改成按方框贴边后又太紧 —— 画布 220×300 而站立人物只有约 74px 宽（取景要竖着装下 1.68m，
+   横向必然留大片透明），方框贴边时人看着还差 70 多像素。现在：`AvatarController` 在待机姿势
+   生效后把蒙皮包围盒投影到画布像素，量出透明边距 `padding`（注意 SkinnedMesh 的 `boundingBox`
+   有缓存，量之前要置 null 才会按当前姿势重算），`src/client/drag.ts` 的 `clampToViewport()`
+   据此允许空画布溢出、但保证人物本体不出视口；`resize` 后重新夹取。verify 有对应断言
+   （人可贴四边 + 人物本体永不越界，padding=0 时退化为整框留内）。
 
 ## 验证
 

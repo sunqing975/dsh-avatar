@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { avatarEvents, type ExpressionDetail, type MotionDetail } from './event-bus.ts'
 import { AvatarController } from './vrm.ts'
 import type { AssetEntry } from './assets.ts'
-import { clampToViewport, type FloatingPosition } from './drag.ts'
+import { clampToViewport, NO_PADDING, type FloatingPadding, type FloatingPosition } from './drag.ts'
 
 const MODEL_URL = '/dsh-avatar/model.vrm'
 /** 动作服务前缀：/dsh-avatar/animations/<name>.vrma（用户导入优先于内置）。 */
@@ -29,8 +29,11 @@ export function AvatarFloating(): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const controllerRef = useRef<AvatarController | null>(null)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
-  // 拖拽位置（left/top 像素）；null 表示尚未拖过，用默认右下角。始终被夹在视口内。
+  // 拖拽位置（left/top 像素）；null 表示尚未拖过，用默认右下角。
   const [pos, setPos] = useState<FloatingPosition | null>(null)
+  // 人物本体在画布里的透明边距（由 controller 量出来）：夹取时让「人」贴到窗口边，
+  // 而不是让 220px 宽的空画布贴边（否则看起来还差 70 多像素就拖不动了）。
+  const [padding, setPadding] = useState<FloatingPadding>(NO_PADDING)
   const dragRef = useRef<{ startX: number; startY: number; origLeft: number; origTop: number } | null>(null)
 
   useEffect(() => {
@@ -49,6 +52,8 @@ export function AvatarFloating(): React.JSX.Element {
       if (!canvas) return
       const controller = new AvatarController(canvas)
       controllerRef.current = controller
+      // 人物边距量出来后重算位置（默认右下角是按「人」贴边的）。
+      controller.onPaddingChange = setPadding
       setState('loading')
       try {
         await controller.init()
@@ -118,24 +123,25 @@ export function AvatarFloating(): React.JSX.Element {
     }
   }, [])
 
-  /** 默认位置：右下角贴边（MARGIN 间距），并且一定落在视口内。 */
+  /** 默认位置：右下角贴边（MARGIN 间距），按人物本体（去掉透明边距）对齐。 */
   const defaultPos = (): FloatingPosition => clampToViewport(
-    window.innerWidth - WIDTH - MARGIN,
-    window.innerHeight - HEIGHT - MARGIN,
+    window.innerWidth - WIDTH + padding.right - MARGIN,
+    window.innerHeight - HEIGHT + padding.bottom - MARGIN,
     window.innerWidth,
     window.innerHeight,
     WIDTH,
     HEIGHT,
+    padding,
   )
 
   /** 视口尺寸变化（窗口缩放/旋转）后重新夹取，避免浮层被留在窗口外。 */
   useEffect(() => {
     const onResize = (): void => {
-      setPos(prev => prev === null ? prev : clampToViewport(prev.left, prev.top, window.innerWidth, window.innerHeight, WIDTH, HEIGHT))
+      setPos(prev => prev === null ? prev : clampToViewport(prev.left, prev.top, window.innerWidth, window.innerHeight, WIDTH, HEIGHT, padding))
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [])
+  }, [padding])
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
     const current = pos ?? defaultPos()
@@ -147,7 +153,7 @@ export function AvatarFloating(): React.JSX.Element {
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
     const drag = dragRef.current
     if (!drag) return
-    // 整个浮层必须留在视口内：拖出窗口等于把人拖没了。
+    // 夹取到「人物本体完整留在视口内」：空画布可以溢出，人不能被拖出窗口。
     setPos(clampToViewport(
       drag.origLeft + e.clientX - drag.startX,
       drag.origTop + e.clientY - drag.startY,
@@ -155,6 +161,7 @@ export function AvatarFloating(): React.JSX.Element {
       window.innerHeight,
       WIDTH,
       HEIGHT,
+      padding,
     ))
   }
 

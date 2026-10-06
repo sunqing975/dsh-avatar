@@ -5,6 +5,7 @@ import type { VRM } from '@pixiv/three-vrm'
 import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation'
 import { assetName, motionUrl, type AssetEntry } from './assets.ts'
 import { buildIdleClip, idleOptionsFromWindow, pickIdleMotion, trackNodeName } from './idle-motion.ts'
+import { NO_PADDING, type FloatingPadding } from './drag.ts'
 
 /** 表情自动重置延迟（毫秒），避免表情一直僵在脸上。 */
 const EXPRESSION_RESET_MS = 5000
@@ -41,6 +42,17 @@ export class AvatarController {
   private pendingMotion: string | null = null
   /** 一次性动作播完后置位，由渲染循环在下一帧切回 idle（不在事件回调里直接切）。 */
   private returnToIdle = false
+  /** 待机姿势生效后要等几帧再量人物边距（mixer 在 vrm.update 之后才写姿势）。 */
+  private paddingCountdown = 0
+
+  /**
+   * 当前姿势下人物本体相对画布的透明边距（px）。
+   * 拖拽夹取用它把「人」而不是「空画布」贴到窗口边（画布 220 宽，人只有约 74 宽）。
+   */
+  padding: FloatingPadding = { ...NO_PADDING }
+
+  /** 边距量出来后回调（组件据此重算默认位置）。 */
+  onPaddingChange: ((padding: FloatingPadding) => void) | null = null
 
   constructor(private readonly canvas: HTMLCanvasElement) {}
 
@@ -177,12 +189,56 @@ export class AvatarController {
     }
     // 常驻待机循环。
     this.playMotion('idle', true)
+    // 等待机姿势真正写进骨骼后再量一次人物边距（拖拽夹取要用）。
+    this.paddingCountdown = 2
     // 动作清单就绪后，补播加载期间到达的动作指令。
     if (this.pendingMotion !== null) {
       const motion = this.pendingMotion
       this.pendingMotion = null
       this.playMotion(motion)
     }
+  }
+
+  /**
+   * 量出「人物本体」在画布里的透明边距：把当前姿势的蒙皮包围盒投影到画布像素。
+   * 画布 220×300 而站立人物只有约 74px 宽，不量这一下，拖到窗口边时人还差 70 多像素。
+   */
+  private measurePadding(): void {
+    const vrm = this.vrm
+    if (!vrm || this.disposed) return
+    const width = this.canvas.clientWidth
+    const height = this.canvas.clientHeight
+    if (width === 0 || height === 0) return
+    // SkinnedMesh 的 boundingBox 会缓存，必须清掉才会按当前姿势重算
+    //（运行时初值就是 null，只是 three 的类型标成了 Box3）。
+    vrm.scene.traverse((obj) => {
+      if (!(obj as THREE.SkinnedMesh).isSkinnedMesh) return
+      ;(obj as unknown as { boundingBox: THREE.Box3 | null }).boundingBox = null
+    })
+    const box = new THREE.Box3().setFromObject(vrm.scene)
+    if (box.isEmpty()) return
+    const point = new THREE.Vector3()
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+    for (const x of [box.min.x, box.max.x]) {
+      for (const y of [box.min.y, box.max.y]) {
+        for (const z of [box.min.z, box.max.z]) {
+          point.set(x, y, z).project(this.camera)
+          const px = ((point.x + 1) / 2) * width
+          const py = ((1 - point.y) / 2) * height
+          minX = Math.min(minX, px); maxX = Math.max(maxX, px)
+          minY = Math.min(minY, py); maxY = Math.max(maxY, py)
+        }
+      }
+    }
+    const padding: FloatingPadding = {
+      left: Math.max(0, Math.round(minX)),
+      right: Math.max(0, Math.round(width - maxX)),
+      top: Math.max(0, Math.round(minY)),
+      bottom: Math.max(0, Math.round(height - maxY)),
+    }
+    this.padding = padding
+    this.logLine(`controller:padding:l=${padding.left}:r=${padding.right}:t=${padding.top}:b=${padding.bottom}`)
+    this.onPaddingChange?.(padding)
   }
 
   /** 统一的排查日志：写 console 并进 window.__dshAvatarLog。 */
@@ -320,6 +376,8 @@ export class AvatarController {
       this.returnToIdle = false
       this.playMotion('idle', true)
     }
+    // 待机姿势生效后再量人物边距（mixer.update 之后姿势才写进骨骼，所以要等一帧）。
+    if (this.paddingCountdown > 0 && --this.paddingCountdown === 0) this.measurePadding()
     this.renderer.render(this.scene, this.camera)
     this.rafId = requestAnimationFrame(() => this.loop())
   }

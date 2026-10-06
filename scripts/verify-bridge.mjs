@@ -484,7 +484,7 @@ if (clientModule.pickIdleMotion(['bow', 'idle']) !== 'idle' || clientModule.pick
 }
 console.log('OK  待机优先级 idle_stand → idle → 程序化兜底')
 
-// ---------- 4.8 浮层拖拽必须被夹在视口内（曾能拖到窗口外，大半个人看不见） ----------
+// ---------- 4.8 浮层拖拽：人物本体必须能贴到窗口边，且不能被拖出窗口 ----------
 const clamp = clientModule.clampToViewport
 const W = 220, H = 300, VW = 1440, VH = 900
 const expect = (label, got, left, top) => {
@@ -493,20 +493,44 @@ const expect = (label, got, left, top) => {
     process.exit(1)
   }
 }
+// 无透明边距时（padding=0）：整个方框留在视口内
 expect('拖出左上角', clamp(-500, -500, VW, VH, W, H), 0, 0)
 expect('拖出右下角', clamp(9999, 9999, VW, VH, W, H), VW - W, VH - H)
-expect('上边界恰好贴边', clamp(VW - W, VH - H, VW, VH, W, H), VW - W, VH - H)
 expect('视口内原样保留', clamp(100, 200, VW, VH, W, H), 100, 200)
 expect('窄窗口（比浮层还小）贴左上', clamp(-50, -50, 180, 200, W, H), 0, 0)
-// 关键回归：任何输入都不能让浮层整体离开视口
-for (const [l, t] of [[-1000, 500], [1000, -1000], [VW, VH], [-W, -H], [VW / 2, VH / 2]]) {
-  const p = clamp(l, t, VW, VH, W, H)
-  if (p.left < 0 || p.top < 0 || p.left + W > VW || p.top + H > VH) {
-    console.error(`FAIL: 夹取后仍越界 left=${p.left} top=${p.top}（浮层 ${W}×${H}，视口 ${VW}×${VH}）`)
+
+// 有透明边距时：允许空画布溢出，但「人物本体」要能贴到窗口边、且不得越出
+// 实测 nuomi.vrm 待机姿势：画布 220×300 里人约 74px 宽，左右各留 ~73px。
+const pad = { left: 73, right: 73, top: 16, bottom: 16 }
+const contentLeft = p => p.left + pad.left
+const contentRight = p => p.left + W - pad.right
+const contentTop = p => p.top + pad.top
+const contentBottom = p => p.top + H - pad.bottom
+const rightMost = clamp(9999, 9999, VW, VH, W, H, pad)
+if (contentRight(rightMost) !== VW || contentBottom(rightMost) !== VH) {
+  console.error(`FAIL: 拖到右下极限时人物没贴到窗口边：人右缘=${contentRight(rightMost)}（视口 ${VW}）、人下缘=${contentBottom(rightMost)}（视口 ${VH}）`)
+  process.exit(1)
+}
+const leftMost = clamp(-9999, -9999, VW, VH, W, H, pad)
+if (contentLeft(leftMost) !== 0 || contentTop(leftMost) !== 0) {
+  console.error(`FAIL: 拖到左上极限时人物没贴到窗口边：人左缘=${contentLeft(leftMost)}、人上缘=${contentTop(leftMost)}`)
+  process.exit(1)
+}
+// 任何输入下，人物本体（方框去掉透明边距后的矩形）必须完整留在视口内
+for (const [l, t] of [[-9999, -9999], [9999, 9999], [-W, VH], [VW, -H], [VW / 2, VH / 2], [0, 0]]) {
+  const p = clamp(l, t, VW, VH, W, H, pad)
+  if (contentLeft(p) < 0 || contentTop(p) < 0 || contentRight(p) > VW || contentBottom(p) > VH) {
+    console.error(`FAIL: 夹取后人物本体越界 left=${p.left} top=${p.top} → 人 [${contentLeft(p)},${contentRight(p)}]×[${contentTop(p)},${contentBottom(p)}]，视口 ${VW}×${VH}`)
     process.exit(1)
   }
 }
-console.log('OK  拖拽夹取：四边都不越界，窄窗口退化贴左上（浮层始终完整可见）')
+// 窄窗口下也不能把人物挤出视口
+const narrow = clamp(9999, 9999, 180, 200, W, H, pad)
+if (contentLeft(narrow) < 0 || contentRight(narrow) > 180) {
+  console.error(`FAIL: 窄窗口夹取后人物越界：人 [${contentLeft(narrow)},${contentRight(narrow)}]`)
+  process.exit(1)
+}
+console.log(`OK  拖拽夹取：人物本体可贴到四边（左极限 left=${leftMost.left}、右极限 left=${rightMost.left}），空画布溢出但人不出窗口`)
 
 // ---------- 5. apply 全程不允许出现任何 console.error（注册失败即回归） ----------
 console.error = nativeConsoleError
