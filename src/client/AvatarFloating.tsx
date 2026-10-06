@@ -33,24 +33,37 @@ export function AvatarFloating(): React.JSX.Element {
     void (async () => {
       try {
         await controller.init()
-        await controller.loadModel(MODEL_URL)
+        // 先拉元信息：模型地址与动作清单都以 Host 侧配置为准，避免客户端硬编码漂移。
+        const info = await (await fetch('/dsh-avatar/info')).json() as { modelUrl?: string; animations?: string[] }
+        await controller.loadModel(info.modelUrl ?? MODEL_URL)
         // 拉取动作清单并加载 VRMA（idle 自动循环待机）。
-        const info = await (await fetch('/dsh-avatar/info')).json() as { animations?: string[] }
         await controller.loadAnimations(info.animations ?? [], ASSETS_URL)
         if (cancelled) return
         setState('ready')
       } catch (err) {
         if (cancelled) return
+        // eslint-disable-next-line no-console
+        console.error('[dsh-avatar] avatar load failed:', err)
         setState('error')
       }
     })()
 
     const onExpression = (event: Event) => {
       const detail = (event as CustomEvent<ExpressionDetail>).detail
+      // eslint-disable-next-line no-console
+      console.log('[dsh-avatar] floating received expression:', detail.expression)
+      const w = window as unknown as { __dshAvatarLog?: string[] }
+      w.__dshAvatarLog = w.__dshAvatarLog ?? []
+      w.__dshAvatarLog.push(`floating:expression:${detail.expression}`)
       controller.playExpression(detail.expression)
     }
     const onMotion = (event: Event) => {
       const detail = (event as CustomEvent<MotionDetail>).detail
+      // eslint-disable-next-line no-console
+      console.log('[dsh-avatar] floating received motion:', detail.motion)
+      const w = window as unknown as { __dshAvatarLog?: string[] }
+      w.__dshAvatarLog = w.__dshAvatarLog ?? []
+      w.__dshAvatarLog.push(`floating:motion:${detail.motion}`)
       controller.playMotion(detail.motion)
     }
     avatarEvents.addEventListener('expression', onExpression)

@@ -8,6 +8,12 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
 const EXPRESSION_RESET_MS = 5000
 
 /**
+ * 取景余量：模型占满画面「限制方向」的比例约为 1/FRAME_MARGIN。
+ * 1.12 → 人物约占画面 89%，四周留 5%~8% 空边。
+ */
+const FRAME_MARGIN = 1.12
+
+/**
  * 数字人 VRM 渲染控制器：three.js 场景 + 表情/动作播放。
  * 参考 nuomi-avatar 壳的 vrm-model-adapter 经验实现（代码全新）。
  */
@@ -25,6 +31,14 @@ export class AvatarController {
   private currentExpression: string | null = null
   private resetTimer: ReturnType<typeof setTimeout> | null = null
   private resizeObserver: ResizeObserver | null = null
+  /**
+   * 模型/动作还没就绪时到达的指令先暂存，就绪后补播。
+   * 否则「刚打开页面就让数字人做个动作」会因为 clips 还空着而被静默丢掉。
+   */
+  private pendingExpression: string | null = null
+  private pendingMotion: string | null = null
+  /** 一次性动作播完后置位，由渲染循环在下一帧切回 idle（不在事件回调里直接切）。 */
+  private returnToIdle = false
 
   constructor(private readonly canvas: HTMLCanvasElement) {}
 
@@ -77,16 +91,42 @@ export class AvatarController {
       obj.frustumCulled = false
     })
     this.mixer = new THREE.AnimationMixer(vrm.scene)
+    // 一次性动作播完（LoopOnce 结束）后回到待机，否则数字人会僵在动作最后一帧。
+    this.mixer.addEventListener('finished', (event) => {
+      if (this.disposed) return
+      // idle 本身是循环动作，不会触发 finished。
+      if (this.actions.get('idle') === event.action) return
+      if (!this.clips.has('idle')) return
+      this.returnToIdle = true
+    })
     this.scene.add(vrm.scene)
-    // 按模型包围盒自动取景：保证人物完整入画（头顶/脚不裁切）。
+    // 按模型包围盒自动取景：竖直与水平都要拟合，四周留余量（头顶/脚不裁切）。
     const box = new THREE.Box3().setFromObject(vrm.scene)
     const center = box.getCenter(new THREE.Vector3())
     const size = box.getSize(new THREE.Vector3())
-    const fovRad = (this.camera.fov * Math.PI) / 180
-    // 以人物高度为主导，留 15% 余量。
-    const dist = (size.y / 2 / Math.tan(fovRad / 2)) * 1.15
+    // 画布是竖长条（220x300），横向可能比纵向先被裁，所以两个方向都要算。
+    // 取景比例以画布实际尺寸为准：init() 里读 clientWidth 时可能还没布局完，camera.aspect 会是旧值。
+    const aspect = this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0
+      ? this.canvas.clientWidth / this.canvas.clientHeight
+      : this.camera.aspect
+    this.camera.aspect = aspect
+    const halfTan = Math.tan((this.camera.fov * Math.PI) / 180 / 2)
+    const dist = Math.max(
+      (size.y / 2) / halfTan, // 竖向装得下
+      (size.x / 2) / (halfTan * aspect), // 横向也装得下
+    ) * FRAME_MARGIN
     this.camera.position.set(center.x, center.y, center.z + dist)
-    this.camera.lookAt(center.x, center.y + size.y * 0.08, center.z)
+    // 视线必须落在包围盒中心。早期写成 `center.y + size.y * 0.08`，等于把相机抬高看，
+    // 人物整体下移约 13cm，正好吃掉下边距——脚就是这么被裁掉的（实测裁掉 12px / 4%）。
+    this.camera.lookAt(center.x, center.y, center.z)
+    this.camera.updateProjectionMatrix()
+
+    // 模型加载期间到达的表情指令补播（动作要等 VRMA 就绪，见 loadAnimations 末尾）。
+    if (this.pendingExpression !== null) {
+      const expression = this.pendingExpression
+      this.pendingExpression = null
+      this.playExpression(expression)
+    }
   }
 
   /**
@@ -120,13 +160,30 @@ export class AvatarController {
     if (this.clips.has('idle')) {
       this.playMotion('idle', true)
     }
+    // 动作清单就绪后，补播加载期间到达的动作指令。
+    if (this.pendingMotion !== null) {
+      const motion = this.pendingMotion
+      this.pendingMotion = null
+      this.playMotion(motion)
+    }
   }
 
   /** 播放动作：切换前停掉其他动作。loop=true 用于 idle 待机循环。 */
   playMotion(name: string, loop = false): void {
+    // eslint-disable-next-line no-console
+    console.log('[dsh-avatar] playMotion:', name, 'clips:', this.clips.size, 'hasClip:', this.clips.has(name))
+    const w = window as unknown as { __dshAvatarLog?: string[] }
+    w.__dshAvatarLog = w.__dshAvatarLog ?? []
+    w.__dshAvatarLog.push(`controller:motion:${name}:clip=${this.clips.has(name)}`)
     const mixer = this.mixer
     const clip = this.clips.get(name)
-    if (!mixer || !clip) return
+    if (!mixer || !clip) {
+      // 动作清单还在加载（clips 为空）时先暂存，就绪后补播；否则直接丢弃并记录。
+      if (this.clips.size === 0 && !this.disposed) this.pendingMotion = name
+      else w.__dshAvatarLog?.push(`controller:motion-missing:${name}`)
+      return
+    }
+    this.returnToIdle = false
     // 停掉所有动作，再播目标动作。
     for (const [n, action] of this.actions) {
       if (n !== name) action.stop()
@@ -144,8 +201,22 @@ export class AvatarController {
 
   /** 播放表情：切换前重置上一个，5 秒后自动重置回中性。 */
   playExpression(name: string): void {
+    // eslint-disable-next-line no-console
+    console.log('[dsh-avatar] playExpression:', name, 'vrm:', !!this.vrm, 'exprMgr:', !!this.vrm?.expressionManager)
+    const w = window as unknown as { __dshAvatarLog?: string[] }
+    w.__dshAvatarLog = w.__dshAvatarLog ?? []
+    w.__dshAvatarLog.push(`controller:expression:${name}:vrm=${!!this.vrm}:exprMgr=${!!this.vrm?.expressionManager}`)
     const vrm = this.vrm
-    if (!vrm?.expressionManager) return
+    if (!vrm?.expressionManager) {
+      // 模型还没加载完：暂存，loadModel 末尾补播。
+      if (!this.disposed) this.pendingExpression = name
+      return
+    }
+    // 表情不存在（模型没这个 blend shape）时不改状态，避免 5 秒后去清一个不存在的表情。
+    if (!vrm.expressionManager.getExpression(name)) {
+      w.__dshAvatarLog?.push(`controller:expression-missing:${name}`)
+      return
+    }
     if (this.currentExpression !== null && this.currentExpression !== name) {
       vrm.expressionManager.setValue(this.currentExpression, 0)
     }
@@ -164,6 +235,9 @@ export class AvatarController {
     this.disposed = true
     cancelAnimationFrame(this.rafId)
     if (this.resetTimer !== null) clearTimeout(this.resetTimer)
+    this.pendingExpression = null
+    this.pendingMotion = null
+    this.returnToIdle = false
     this.resizeObserver?.disconnect()
     if (this.renderer) {
       this.renderer.dispose()
@@ -185,6 +259,11 @@ export class AvatarController {
     const delta = this.clock.getDelta()
     if (this.vrm) this.vrm.update(delta)
     this.mixer?.update(delta)
+    // 'finished' 事件在 mixer.update 内部派发；切场景放到下一帧做，避免在派发过程中启停 action。
+    if (this.returnToIdle) {
+      this.returnToIdle = false
+      this.playMotion('idle', true)
+    }
     this.renderer.render(this.scene, this.camera)
     this.rafId = requestAnimationFrame(() => this.loop())
   }

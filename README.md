@@ -57,9 +57,15 @@ dsh plugin --profile web add link:/path/to/dsh-avatar
 
 ```bash
 npm install
-npm run build        # esbuild 构建 host(lib/index.js) + client(lib/client.js)
-npm run typecheck    # 双 tsconfig 类型检查
+npm run build          # esbuild 构建 host(lib/index.js) + client(lib/client.js)
+npm run typecheck      # 双 tsconfig 类型检查
+npm run verify:bridge  # 端到端验证「工具调用 → /dsh-avatar/pose → 客户端」链路
 ```
+
+`verify:bridge` 只依赖构建产物：它真的加载 `lib/index.js` 注册路由与工具、真的起一个 http 服务、
+真的在最小 `window` 环境里执行 `lib/client.js` 的轮询代码，然后断言三次工具调用是否都被客户端按序收到。
+改了 `pose.ts` / `tools.ts` / `client/index.tsx` 之后先跑它，比在浏览器里猜快得多。
+（也可用 `PKG=file:///某个/dsh-avatar/ npm run verify:bridge` 去验证别的 profile 里装的那一份。）
 
 ### 本地接入 dsh web
 
@@ -84,6 +90,9 @@ src/
 assets/
   models/           # VRM 模型
   animations/       # VRMA 动作
+scripts/
+  build.mjs         # esbuild 双产物构建
+  verify-bridge.mjs # 工具调用 → 数字人 的端到端链路验证
 ```
 
 ## 实现要点（踩坑记录）
@@ -92,3 +101,20 @@ assets/
 - 数字人挂载在 `shell.overlay`（root scope 全局前层），无需会话即可显示；该层默认 click-through，组件需 `pointerEvents: auto`。
 - esbuild 需 `jsx: 'automatic'`（否则生成 `React.createElement` 而 bundle 里没有 React 全局）。
 - VRMA 解析用 `gltf.userData.vrmAnimations[0]`（复数），不是 `vrmAnimation`。
+- **「工具能调、数字人不动」的根因通常是这条指令链路**。浏览器里的 client 插件收不到 Host 的
+  `ctx.on('session/event')`（没有任何 client bundle 把它转发过来），所以客户端监听会话事件是死路；
+  真正的通路是 `PoseHub`（Host）→ `GET /dsh-avatar/pose?since=<seq>` → client 轮询 → `avatarEvents`。
+  排查顺序：
+  1. 浏览器 console 若出现 `/dsh-avatar/pose 404`，说明 **Host 侧装的是旧版插件**（客户端新、Host 旧），
+     此时 `curl -s -o /dev/null -w '%{http_code}' <dsh-web-url>/dsh-avatar/pose` 也能复现 404。
+  2. `window.__dshAvatarLog` 里应有 `baseline seq=N`，之后每次工具调用出现 `pose seq=N ...`；
+     有 `pose ...` 但没有 `floating:...` 说明事件总线/组件这一层断了。
+- `/dsh-avatar/pose` **必须**始终返回当前水位线（无新指令时 `commands: []`）。早期版本用 `null`
+  表示「无新指令」，导致客户端在空队列时永远建不起水位线，之后到达的**第一条**指令被当成水位线吞掉。
+- 指令桥用**有序队列**而不是「最新表情 + 最新动作」两个粘滞字段：后者每轮快照都带着另一个通道的旧值，
+  任何一条新指令都会顺手把另一通道重播一遍。
+- 一次性动作（`LoopOnce`）播完必须手动切回 `idle`，否则数字人会僵在动作最后一帧。
+- 自动取景（`vrm.ts` 的 `loadModel`）有两个坑：**横向也要拟合**（画布是 220x300 竖长条，
+  只按高度算会切到手臂），**视线必须落在包围盒中心**。早期写成 `lookAt(center.y + size.y * 0.08)`，
+  等于把相机抬起来看，人物整体下移约 13cm，正好吃掉下边距 —— 实测脚被裁掉 12px（4% 画面）。
+  现在按 `max(竖向距离, 横向距离) * 1.12` 取景，四周各留 5%~8%。
