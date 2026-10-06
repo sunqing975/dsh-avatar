@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import { parseBlendShapesFromGlb } from './model-info.ts'
 import { Config, type Config as ConfigType } from './config.ts'
+import { PoseHub } from './pose.ts'
 import { registerExpressionTool, registerMotionTool } from './tools.ts'
 
 /**
@@ -38,6 +39,7 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 export function apply(ctx: Context, config: ConfigType): void {
   const modelPath = path.resolve(packageRoot, config.modelPath)
+  const hub = new PoseHub()
 
   // 模型服务：把 VRM 文件以 HTTP 形式提供给浏览器渲染。
   ctx.webServer.register({
@@ -121,6 +123,27 @@ export function apply(ctx: Context, config: ConfigType): void {
     },
   })
 
+  // 指令桥端点：浏览器侧的客户端插件拿不到 Host 的 session/event，
+  // 因此改由「工具写入 → 客户端轮询」传递表情/动作指令。
+  // `?since=<seq>` 返回水位线之后的新指令（始终带当前 seq，无新指令时 commands 为空数组）。
+  // 旧版这里用 null 表示「无新指令」，会让客户端永远建不起水位线、吞掉第一条指令——语义见 pose.ts 顶部说明。
+  ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-avatar/pose',
+    handler: (req, res) => {
+      try {
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const parsed = Number.parseInt(url.searchParams.get('since') ?? '0', 10)
+        const since = Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify(hub.read(since)))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+      }
+    },
+  })
+
   // 表情工具：动态 enum 来自当前 VRM 模型的 blend shapes。
   // apply 内同步读完模型；解析失败则不注册工具并告警（避免 LLM 拿到空 enum）。
   void (async () => {
@@ -133,7 +156,7 @@ export function apply(ctx: Context, config: ConfigType): void {
         ctx.logger?.warn?.('[dsh-avatar] model has no blend shapes; set_expression not registered')
         return
       }
-      registerExpressionTool(ctx, blendShapes)
+      registerExpressionTool(ctx, blendShapes, hub)
       ctx.logger?.info?.('[dsh-avatar] registered set_expression with %d expressions: %s', blendShapes.length, blendShapes.map(s => s.id).join(', '))
     } catch (err) {
       ctx.logger?.warn?.('[dsh-avatar] failed to parse model at %s: %s (set_expression NOT registered)', modelPath, err instanceof Error ? err.message : err)
@@ -151,7 +174,7 @@ export function apply(ctx: Context, config: ConfigType): void {
         ctx.logger?.warn?.('[dsh-avatar] no vrma animations found; play_motion not registered')
         return
       }
-      registerMotionTool(ctx, animations)
+      registerMotionTool(ctx, animations, hub)
       ctx.logger?.info?.('[dsh-avatar] registered play_motion with %d motions: %s', animations.length, animations.join(', '))
     } catch (err) {
       ctx.logger?.warn?.('[dsh-avatar] failed to scan animations: %s (play_motion NOT registered)', err instanceof Error ? err.message : err)

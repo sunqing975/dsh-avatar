@@ -39,7 +39,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepare": "npm run build",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
+    "verify:bridge": "node scripts/verify-bridge.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.0",
