@@ -104,6 +104,11 @@ ctx 替身（`makeClientCtx`）刻意复刻了 Cordis proxy 的两条语义（�
 - 本机跑 `npm ci` 会失败（`~/.npm` 里有 root 属主的缓存文件，旧版 npm 遗留）：用
   `npm ci --cache "$TMPDIR/npm-cache"` 绕过，或 `sudo chown -R $(id -u):$(id -g) ~/.npm`。
   GitHub Runner 上是干净缓存，CI 不受影响。
+  **注意 `npm ci` 会先删掉整个 `node_modules/`，装失败就留下「零依赖」状态**：本项目是 link 安装，
+  两个宿主都按真实路径解析依赖（`lib/index.js` 的 `@deepseek-ai/schemastery` 之类），
+  项目里没有 `node_modules` 时插件会直接 import 失败 → 桌面端/web 端表现为「插件打不开」、
+  右栏 tab 与浮层全无。修法就是在项目里重新装依赖（`npm ci --cache "$TMPDIR/npm-cache"`），
+  然后重启宿主；`node -e "import('./lib/index.js')"` 能在装完后自检是否已恢复。
 - verify 每次 mkdtemp 一个临时数据目录（OS 自动清理，无残留污染）。
 - 上传端点读原始 body（无 multipart）；VRMA 文件仅校验魔数，播放失败由客户端 console.warn 兜底。
 - `package.json` 的 `dsh.client.inject` 只列了 locale / ui-slots（sidebar-right 由 dsh web 自带，
